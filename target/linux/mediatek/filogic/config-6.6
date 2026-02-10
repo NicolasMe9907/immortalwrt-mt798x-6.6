@@ -541,3 +541,17 @@ CONFIG_ZONE_DMA32=y
 CONFIG_ZSTD_COMMON=y
 CONFIG_ZSTD_COMPRESS=y
 CONFIG_ZSTD_DECOMPRESS=y
+# --- 物理主權：MT7981 專屬內存優化 ---
+# 1. 強制切換至 SLUB 分配器 (MT7981 雙核 A53 的本命)
+CONFIG_SLUB=y
+# CONFIG_SLAB is not set
+# CONFIG_SLOB is not set
+# 2. 關閉調試負重 (極致性能)
+# CONFIG_SLUB_DEBUG is not set
+# CONFIG_DEBUG_KERNEL is not set
+# 3. 激活 KSM 內存去重 (合閘關鍵)
+CONFIG_KSM=y
+CONFIG_EXPERT=y
+# 4. zRAM 默認算法鎖定
+CONFIG_ZRAM_DEF_COMP_ZSTD=y
+CONFIG_ZRAM_DEF_COMP="zstd"
