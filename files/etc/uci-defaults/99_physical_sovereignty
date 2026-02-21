@@ -1,35 +1,44 @@
 #!/bin/sh
-# --- MT7986 物理主權 v9.0 (四核矩陣·算力全解版) ---
+# --- MT7986 物理主權 v10.0 (四核矩陣·算力全解版) ---
 
-logger -t "Sovereignty" "啟動 v9.0：四核矩陣重構 (MT7986 專用)"
+logger -t "Sovereignty" "啟動 v10.0：四核矩陣重構 (MT7986 專用)"
 
-# 1. 喚醒硬件模組 (硬件引擎是四合一的基石)
+# 1. 喚醒硬件模組 (保持不變，這是基石)
 modprobe crypto_safexcel 2>/dev/null
 echo 1 > /proc/sys/net/netfilter/nf_flow_table_hw 2>/dev/null
 
-# 2. 四核矩陣：IRQ 深度隔離 (不再是交錯，而是專核專用)
+# 2. 四核矩陣重組：雙核分組流水線 (不再是單核孤立)
 # ---------------------------------------------------------
+# 分組邏輯：
+# [組A] CPU0, CPU1: 負責 IO 搬運與基礎網絡 (接收端)
+# [組B] CPU2, CPU3: 負責 暴力計算 (kTLS/加密/zstd/分流邏輯)
+
 ETH_IRQ=$(grep -m1 "mtk-network" /proc/interrupts | cut -d: -f1 | tr -d ' ')
-WIFI_IRQ=$(grep -m1 "mt7986" /proc/interrupts | cut -d: -f1 | tr -d ' ')
-CRYPTO_IRQ=$(grep "eip" /proc/interrupts | cut -d: -f1)
+WIFI_IRQ=$(grep -m1 "mt7981" /proc/interrupts | cut -d: -f1 | tr -d ' ') # MT7986 有時也識別為此
+CRYPTO_IRQ=$(grep -E "eip|safexcel" /proc/interrupts | awk -F: '{print $1}' | tr -d ' ')
 
-# CPU0: 系統與基礎任務守護
-# CPU1: 有線網絡 (Ethernet) 專屬核心
-[ -n "$ETH_IRQ" ] && echo 2 > "/proc/irq/$ETH_IRQ/smp_affinity" # 0010
+# 有線與無線中斷：綁定到 [組A] (CPU0, 1 -> Mask 3)
+# 讓這兩個核專心負責從網卡“提貨”
+for irq in $ETH_IRQ $WIFI_IRQ; do echo 3 > "/proc/irq/$irq/smp_affinity"; done
 
-# CPU2: 加密引擎 (Crypto) 專屬核心 - 讓隧道流量獨佔一核，牆外 4K 秒開的關鍵
-for irq in $CRYPTO_IRQ; do echo 4 > "/proc/irq/$irq/smp_affinity"; done # 0100
+# 加密引擎中斷：綁定到 [組B] (CPU2, 3 -> Mask C)
+# 讓這兩個核專心處理“加工”（解密與壓縮）
+for irq in $CRYPTO_IRQ; do echo c > "/proc/irq/$irq/smp_affinity"; done
 
-# CPU3: 無線網絡 (WiFi) 專屬核心 - 確保高負載下無線延遲穩如磐石
-[ -n "$WIFI_IRQ" ] && echo 8 > "/proc/irq/$WIFI_IRQ/smp_affinity" # 1000
-
-# 3. RPS 四核聯動：全量開啟 (掩碼 F = 1111)
+# 3. RPS 邏輯對齊：精準接力 (不再全量開啟)
 # ---------------------------------------------------------
-# 四核模式下，RPS 是不同核心間數據包“接力”的橋樑
-for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do echo f > "$rps_file"; done
-# 提高流表深度，對應 MT7986 的大內存與四核併發
-for rps_flow in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo 4096 > "$rps_flow"; done
+# 我們要讓 [組A] 搬運進來的包，精準地“泵”給 [組B] 去處理
+# 所以 RPS 掩碼應該設為 C (即 1100，指向 CPU2, 3)
+for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do echo c > "$rps_file"; done
+
+# 提高流表深度，匹配 MT7986 的四核吞吐
+for rps_flow in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo 2048 > "$rps_flow"; done
 echo 16384 > /proc/sys/net/core/rps_sock_flow_entries
+
+# 4. 巔峰參數合閘
+sysctl -w net.core.default_qdisc=fq
+sysctl -w net.ipv4.tcp_congestion_control=bbr
+sysctl -w net.ipv4.tcp_fastopen=3
 
 # 4. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
 # ---------------------------------------------------------
@@ -50,10 +59,6 @@ net.core.wmem_max=33554432
 net.ipv4.tcp_rmem=4096 131072 33554432
 net.ipv4.tcp_wmem=4096 131072 33554432
 
-# BBR + FQ_CODEL (黃金組合)
-net.core.default_qdisc=fq_codel
-net.ipv4.tcp_congestion_control=bbr
-EOF
 sysctl -p
 
 # 5. zRAM 狂暴模式 (zstd)
@@ -71,5 +76,5 @@ fi
 # 6. 強制定頻性能模式
 for i in /sys/devices/system/cpu/cpufreq/policy*; do echo performance > "$i/scaling_governor"; done
 
-logger -t "Sovereignty" "v9.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
+logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
 exit 0
