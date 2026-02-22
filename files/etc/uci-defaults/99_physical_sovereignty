@@ -7,33 +7,53 @@ logger -t "Sovereignty" "啟動 v10.0：四核矩陣重構 (MT7986 專用)"
 modprobe crypto_safexcel 2>/dev/null
 echo 1 > /proc/sys/net/netfilter/nf_flow_table_hw 2>/dev/null
 
-# 2. 四核矩陣重組：雙核分組流水線 (不再是單核孤立)
-# ---------------------------------------------------------
-# 分組邏輯：
-# [組A] CPU0, CPU1: 負責 IO 搬運與基礎網絡 (接收端)
-# [組B] CPU2, CPU3: 負責 暴力計算 (kTLS/加密/zstd/分流邏輯)
+# [物理层 GRO 合闸]
+# 在网络接口完全拉起前，强制开启通用接收卸载
+# 这能合并小包，极大缓解 A53 处理软中断的上下文切换压力
+ethtool -K eth0 gro on 2>/dev/null
+ethtool -K eth1 gro on 2>/dev/null
 
-ETH_IRQ=$(grep -m1 "mtk-network" /proc/interrupts | cut -d: -f1 | tr -d ' ')
-WIFI_IRQ=$(grep -m1 "mt7981" /proc/interrupts | cut -d: -f1 | tr -d ' ') # MT7986 有時也識別為此
-CRYPTO_IRQ=$(grep -E "eip|safexcel" /proc/interrupts | awk -F: '{print $1}' | tr -d ' ')
+# [主权锁定] 强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
+for i in 0 1 2 3; do
+    [ -e "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor" ] && \
+    echo "performance" > "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor"
+done
 
-# 有線與無線中斷：綁定到 [組A] (CPU0, 1 -> Mask 3)
-# 讓這兩個核專心負責從網卡“提貨”
-for irq in $ETH_IRQ $WIFI_IRQ; do echo 3 > "/proc/irq/$irq/smp_affinity"; done
+# [精准寻脉] 通过物理地址锁定硬件中断，不依赖固件标签
+ETH_IRQ=\$(grep "15100000.ethernet" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ' | head -n1)
+CRYPTO_IRQ=\$(grep "10320000.crypto" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ')
 
-# 加密引擎中斷：綁定到 [組B] (CPU2, 3 -> Mask C)
-# 讓這兩個核專心處理“加工”（解密與壓縮）
-for irq in $CRYPTO_IRQ; do echo c > "/proc/irq/$irq/smp_affinity"; done
+# [自适应均衡] 识别核心数并设定全核心打群架掩码 (3 为双核, f 为四核)
+CORE_COUNT=\$(grep -c "^processor" /proc/cpuinfo)
+[ "\$CORE_COUNT" -eq 4 ] && MASK="f" || MASK="3"
 
-# 3. RPS 邏輯對齊：精準接力 (不再全量開啟)
-# ---------------------------------------------------------
-# 我們要讓 [組A] 搬運進來的包，精準地“泵”給 [組B] 去處理
-# 所以 RPS 掩碼應該設為 C (即 1100，指向 CPU2, 3)
-for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do echo c > "$rps_file"; done
+# [中断主权绑定]
+[ -n "\$ETH_IRQ" ] && echo "\$MASK" > "/proc/irq/\$ETH_IRQ/smp_affinity"
+for irq in \$CRYPTO_IRQ; do
+    echo "\$MASK" > "/proc/irq/\$irq/smp_affinity"
+done
 
-# 提高流表深度，匹配 MT7986 的四核吞吐
-for rps_flow in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo 2048 > "$rps_flow"; done
-echo 16384 > /proc/sys/net/core/rps_sock_flow_entries
+# [ RPS 泵送优化]
+# 配合 GRO 开启后的大包，这里的分发效率将达到物理巅峰
+for x in /sys/class/net/*/queues/rx-*/rps_cpus; do echo "\$MASK" > "\$x"; done
+for x in /sys/class/net/*/queues/tx-*/xps_cpus; do echo "\$MASK" > "\$x"; done
+
+# [流量池扩容] 极大化流表预算，匹配 1.65G/2.2G 的高频吞吐
+echo "32768" > /proc/sys/net/core/rps_sock_flow_entries
+for x in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo "4096" > "\$x"; done
+
+# [物理卸载合闸] 强制开启硬件 PPE 转发引擎
+echo 1 > /sys/kernel/debug/hnat/all_external 2>/dev/null
+echo 1 > /sys/kernel/debug/hnat/all_internal 2>/dev/null
+
+# [资产标记] 在系统中留下主权印记
+logger "Physical Sovereignty: MT798x CPU Balance and Offload optimization applied."
+
+exit 0
+EOF
+
+# 赋予该文件物理执行权限
+chmod +x package/base-files/files/etc/uci-defaults/99_physical_sovereignty
 
 # 4. 巔峰參數合閘
 sysctl -w net.core.default_qdisc=fq
@@ -75,6 +95,20 @@ fi
 
 # 6. 強制定頻性能模式
 for i in /sys/devices/system/cpu/cpufreq/policy*; do echo performance > "$i/scaling_governor"; done
+
+# [7. 无线主权：解锁 AU 区域与最大发射功率]
+# 遍历所有无线电接口 (radio0, radio1)
+for radio in 0 1; do
+    # 锁定区域为澳大利亚 (AU)，释放物理限制
+    uci set wireless.radio${radio}.country='AU'
+    # 提升发射功率到极致
+    uci set wireless.radio${radio}.txpower='28'
+    # 开启物理层加速特性
+   uci set wireless.radio${radio}.beamformer='1'
+done
+uci commit wireless
+# 强制重启无线服务应用变更
+/sbin/wifi up
 
 logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
 exit 0
