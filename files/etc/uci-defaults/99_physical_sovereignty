@@ -69,7 +69,11 @@ sysctl -w net.core.default_qdisc=fq
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 sysctl -w net.ipv4.tcp_fastopen=3
 
-# 7. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
+# 7. 针对 fq 的进阶微调 (防止小包拥塞)
+# 允许每个流的最大速率不被过度限制，保持 4K 流的充沛动力
+sysctl -w net.ipv4.tcp_notsent_lowat=16384
+
+# 8. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
 # ---------------------------------------------------------
 cat >> /etc/sysctl.conf <<EOF
 # 四核心跳優化：適度拉長調度週期，減少核間切換開銷
@@ -89,9 +93,5 @@ net.ipv4.tcp_rmem=4096 131072 33554432
 net.ipv4.tcp_wmem=4096 131072 33554432
 
 sysctl -p
-
-# 8. 強制定頻性能模式
-for i in /sys/devices/system/cpu/cpufreq/policy*; do echo performance > "$i/scaling_governor"; done
-
 logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
 exit 0
