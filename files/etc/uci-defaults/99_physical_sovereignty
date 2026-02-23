@@ -7,18 +7,36 @@ logger -t "Sovereignty" "啟動 v10.0：四核矩陣重構 (MT7986 專用)"
 modprobe crypto_safexcel 2>/dev/null
 echo 1 > /proc/sys/net/netfilter/nf_flow_table_hw 2>/dev/null
 
-# [物理层 GRO 合闸]
-# 在网络接口完全拉起前，强制开启通用接收卸载
-# 这能合并小包，极大缓解 A53 处理软中断的上下文切换压力
-ethtool -K eth0 gro on 2>/dev/null
-ethtool -K eth1 gro on 2>/dev/null
+# 2. zRAM 強制 zstd 重構 (內存物理增程)
+if [ -b /dev/zram0 ]; then
+    swapoff /dev/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    echo zstd > /sys/block/zram0/comp_algorithm
+    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
+    echo $((TOTAL_MEM * 1024)) > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 10 /dev/zram0
+fi
 
-# [主权锁定] 强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
+# 3. GRO 物理层暴力合闸 - 消除中断风暴]
+# ---------------------------------------------------------
+# 遍历所有物理网口，强制开启卸载加速
+for eth in eth0 eth1 eth2 eth3; do
+    if ethtool -i $eth >/dev/null 2>&1; then
+        ethtool -K $eth gro on 2>/dev/null
+        ethtool -K $eth gso on 2>/dev/null
+        ethtool -K $eth tso on 2>/dev/null
+        logger "Sovereignty: $eth GRO/GSO/TSO enforced."
+    fi
+done
+
+# 4.强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
 for i in 0 1 2 3; do
     [ -e "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor" ] && \
     echo "performance" > "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor"
 done
 
+# 5.重新配置IRQ&RPS均衡模式
 # [精准寻脉] 通过物理地址锁定硬件中断，不依赖固件标签
 ETH_IRQ=\$(grep "15100000.ethernet" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ' | head -n1)
 CRYPTO_IRQ=\$(grep "10320000.crypto" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ')
@@ -46,21 +64,12 @@ for x in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo "4096" > "\$x"; done
 echo 1 > /sys/kernel/debug/hnat/all_external 2>/dev/null
 echo 1 > /sys/kernel/debug/hnat/all_internal 2>/dev/null
 
-# [资产标记] 在系统中留下主权印记
-logger "Physical Sovereignty: MT798x CPU Balance and Offload optimization applied."
-
-exit 0
-EOF
-
-# 赋予该文件物理执行权限
-chmod +x package/base-files/files/etc/uci-defaults/99_physical_sovereignty
-
-# 4. 巔峰參數合閘
+# 6. 巔峰參數合閘
 sysctl -w net.core.default_qdisc=fq
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 sysctl -w net.ipv4.tcp_fastopen=3
 
-# 4. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
+# 7. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
 # ---------------------------------------------------------
 cat >> /etc/sysctl.conf <<EOF
 # 四核心跳優化：適度拉長調度週期，減少核間切換開銷
@@ -81,60 +90,8 @@ net.ipv4.tcp_wmem=4096 131072 33554432
 
 sysctl -p
 
-# 5. zRAM 狂暴模式 (zstd)
-# [关卡 1：物理主权加载 - 必须最先执行]
-modprobe zstd 2>/dev/null
-modprobe zram 2>/dev/null
-
-# [关卡 2：zRAM 強制 zstd 重構 - 內存物理增程]
-# ---------------------------------------------------------
-if [ -b /dev/zram0 ]; then
-    # 1. 先停掉旧的 Swap，清空逻辑
-    swapoff /dev/zram0 2>/dev/null
-    echo 1 > /sys/block/zram0/reset 2>/dev/null
-
-    # 2. 注入 ZSTD。如果失败（说明内核不支持），它会自动保留默认
-    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null
-
-    # 3. 动态计算内存：设置为物理内存的 100% (ZSTD 压缩率高，不虚)
-    # TOTAL_MEM 是 KB，disksize 需要 Byte
-    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
-    echo $((TOTAL_MEM * 1024)) > /sys/block/zram0/disksize
-
-    # 4. 重新格式化并拉起，赋予高优先级
-    mkswap /dev/zram0 >/dev/null
-    swapon -p 10 /dev/zram0
-    logger "Sovereignty: zRAM has been weaponized with ZSTD."
-fi
-
-# [关卡 3：GRO 物理层暴力合闸 - 消除中断风暴]
-# ---------------------------------------------------------
-# 遍历所有物理网口，强制开启卸载加速
-for eth in eth0 eth1 eth2 eth3; do
-    if ethtool -i $eth >/dev/null 2>&1; then
-        ethtool -K $eth gro on 2>/dev/null
-        ethtool -K $eth gso on 2>/dev/null
-        ethtool -K $eth tso on 2>/dev/null
-        logger "Sovereignty: $eth GRO/GSO/TSO enforced."
-    fi
-done
-
-# 6. 強制定頻性能模式
+# 8. 強制定頻性能模式
 for i in /sys/devices/system/cpu/cpufreq/policy*; do echo performance > "$i/scaling_governor"; done
-
-# [7. 无线主权：解锁 AU 区域与最大发射功率]
-# 遍历所有无线电接口 (radio0, radio1)
-for radio in 0 1; do
-    # 锁定区域为澳大利亚 (AU)，释放物理限制
-    uci set wireless.radio${radio}.country='AU'
-    # 提升发射功率到极致
-    uci set wireless.radio${radio}.txpower='28'
-    # 开启物理层加速特性
-   uci set wireless.radio${radio}.beamformer='1'
-done
-uci commit wireless
-# 强制重启无线服务应用变更
-/sbin/wifi up
 
 logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
 exit 0
