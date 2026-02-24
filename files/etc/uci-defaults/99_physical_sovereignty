@@ -33,9 +33,6 @@ for dev in eth0 eth1 apclix0 ra0 rax0; do
     fi
 done
 
-# 针对 Bridge 桥接接口的额外加固
-ethtool -K br-lan gro on 2>/dev/null
-
 # 4.强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
 for i in 0 1 2 3; do
     [ -e "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor" ] && \
@@ -93,6 +90,7 @@ net.core.netdev_budget_usecs=20000
 
 # 內存管理 (防爆、防抖)
 vm.vfs_cache_pressure=60
+vm.swappiness=100
 vm.min_free_kbytes=40960
 
 # 內存與緩衝區 (MT7986 通常配備 512M/1G 內存，參數直接翻倍)
@@ -111,18 +109,17 @@ net.ipv4.tcp_wmem=4096 65536 16777216
 EOF
 sysctl -p
 
+# MT7531 网口减负 - 物理层整流]
+# 增加发送队列长度，防止硬件芯片在高负载下丢包导致发热
+ifconfig eth0 txqueuelen 2000
+ifconfig eth1 txqueuelen 2000
 
-# 9. 锁定无线中继背景扫描 (针对 apclix0)
-# simple:<阈值>:<长间隔>:<恢复时间>
-# 下面设置表示：当信号强度低于 -70dBm 时才扫描，正常间隔拉长到 600 秒
-uci set wireless.@wifi-iface[0].bgscan='simple:30:-70:600'
+# 9. 无线射频降温 - 被动扫描逻辑]
+# 针对中继接口开启被动扫描（只听不发），并禁用主动背景扫描降温
+uci set wireless.@wifi-iface[0].passive_scan='1'
+uci set wireless.@wifi-iface[0].bgscan='none'
 
-# 延长 Beacon 周期 (减少芯片心跳频率)
-# 针对 2.4G 和 5G 射频拉长信标间隔
-uci set wireless.default_radio0.beacon_int='200'
-uci set wireless.default_radio1.beacon_int='200'
-
-# 提交并固化配置
+#提交配置
 uci commit wireless
 
 logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
