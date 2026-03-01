@@ -644,20 +644,6 @@ define Device/cmcc_rax3000m_common
 	pad-rootfs | append-metadata
 endef
 
-define Device/cmcc_rax3000m-emmc
-  DEVICE_VENDOR := CMCC
-  DEVICE_MODEL := RAX3000M (eMMC version)
-  DEVICE_DTS := mt7981b-cmcc-rax3000m-emmc
-  DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-usb3 f2fsck mkf2fs
-  SUPPORTED_DEVICES += cmcc,rax3000m-emmc
-  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
-  KERNEL_INITRAMFS := kernel-bin | lzma | \
-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += cmcc_rax3000m-stock
-
 define Device/cmcc_rax3000m-emmc-mtk
   DEVICE_VENDOR := CMCC
   DEVICE_MODEL := RAX3000M EMMC
@@ -712,17 +698,6 @@ define Device/cmcc_rax3000me
   ARTIFACT/nand-ddr4-bl31-uboot.fip := mt7981-bl31-uboot cmcc_rax3000me-nand-ddr4
 endef
 TARGET_DEVICES += cmcc_rax3000me
-
-define Device/cmcc_xr30-emmc
-  DEVICE_VENDOR := CMCC
-  DEVICE_MODEL := XR30 eMMC
-  DEVICE_DTS := mt7981b-cmcc-xr30-emmc
-  DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-usb3 f2fsck mkf2fs losetup kmod-fs-f2fs kmod-mmc
-  SUPPORTED_DEVICES += cmcc,xr30-emmc
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += cmcc_xr30-emmc
 
 define Device/cmcc_xr30-nand
   DEVICE_VENDOR := CMCC
@@ -2221,7 +2196,7 @@ define Device/xiaomi_redmi-router-ax6000-ubootmod
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-leds-ws2812b kmod-mt7915e kmod-mt7986-firmware mt7986-wo-firmware
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
-  UBINIZE_OPTS := -E 64
+  UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   ARTIFACTS := initramfs-factory.ubi
