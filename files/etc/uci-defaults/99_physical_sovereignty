@@ -18,28 +18,13 @@ if [ -b /dev/zram0 ]; then
     swapon -p 10 /dev/zram0
 fi
 
-# 3：GRO全链路物理层暴力合闸 - 最终版]
-# 遍历所有活跃的物理与无线网口，消除中断风暴
-# 覆盖范围：有线(eth), 无线中继(apclix), 无线发射(ra/rax)
-for dev in eth0 eth1 apclix0 ra0 rax0; do
-    if [ -d "/sys/class/net/$dev" ]; then
-        # 强制开启大包封装，减少 CPU 换页开销
-        ethtool -K $dev gro on 2>/dev/null
-        ethtool -K $dev gso on 2>/dev/null
-        ethtool -K $dev tso on 2>/dev/null
-        # 对移动端友好的传输加速
-        ethtool -K $dev ufo on 2>/dev/null
-        logger "Physical_Sovereignty: $dev High-Speed Logic Aligned"
-    fi
-done
-
-# 4.强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
+# 3.强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
 for i in 0 1 2 3; do
     [ -e "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor" ] && \
     echo "performance" > "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor"
 done
 
-# 5.重新配置IRQ&RPS均衡模式
+# 4.重新配置IRQ&RPS均衡模式
 # [精准寻脉] 通过物理地址锁定硬件中断，不依赖固件标签
 ETH_IRQ=\$(grep "15100000.ethernet" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ' | head -n1)
 CRYPTO_IRQ=\$(grep "10320000.crypto" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ')
@@ -67,16 +52,16 @@ for x in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo "4096" > "\$x"; done
 echo 1 > /sys/kernel/debug/hnat/all_external 2>/dev/null
 echo 1 > /sys/kernel/debug/hnat/all_internal 2>/dev/null
 
-# 6. 巔峰參數合閘
+# 5. 巔峰參數合閘
 sysctl -w net.core.default_qdisc=fq
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 sysctl -w net.ipv4.tcp_fastopen=3
 
-# 7. 针对 fq 的进阶微调 (防止小包拥塞)
+# 6. 针对 fq 的进阶微调 (防止小包拥塞)
 # 允许每个流的最大速率不被过度限制，保持 4K 流的充沛动力
 sysctl -w net.ipv4.tcp_notsent_lowat=16384
 
-# 8. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
+# 7. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
 # ---------------------------------------------------------
 cat >> /etc/sysctl.conf <<EOF
 # 四核心跳優化：適度拉長調度週期，減少核間切換開銷
