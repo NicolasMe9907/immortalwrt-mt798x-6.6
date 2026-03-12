@@ -1,0 +1,197 @@
+#!/bin/sh
+# --- MT7986 物理主權 v10.0 (四核矩陣·算力全解版) ---
+
+logger -t "Sovereignty" "啟動 v10.0：四核矩陣重構 (MT7986 專用)"
+
+# ---1. 喚醒硬件模組 (保持不變，這是基石)
+modprobe crypto_safexcel 2>/dev/null
+echo 1 > /proc/sys/net/netfilter/nf_flow_table_hw 2>/dev/null
+
+# ---2. zRAM 強制 zstd 重構 (內存物理增程)
+if [ -b /dev/zram0 ]; then
+    swapoff /dev/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    echo zstd > /sys/block/zram0/comp_algorithm
+    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
+    echo $((TOTAL_MEM * 1024)) > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 10 /dev/zram0
+fi
+
+#!/bin/sh
+
+# ---3.划分vlan，针对性启用/关闭GRO，适配EIP的全量启用
+# 99-network-logic-isolation
+# 适用架构：MediaTek Filogic 830 (MT7986A) DSA 驱动
+# 核心逻辑：物理去熵 + VLAN 隔离 + EIP 路径优化
+
+
+# 1. 物理层彻底去熵 (物理口级封杀大包聚合)
+# 针对物理口执行“外科手术”，防止 MT7531E 缓冲区溢出导致的卡死
+# 默认 MT7986A 的物理口通常命名为 wan, lan1, lan2 (根据具体板型确认)
+for dev in wan lan1 lan2 eth0; do
+    if [ -d "/sys/class/net/$dev" ]; then
+        ethtool -K $dev gro off gso off tso off tso6 off ufo off 2>/dev/null
+    fi
+done
+
+# 2. DSA & VLAN 逻辑构建
+uci -q batch << EOI
+  # 配置主桥 br-lan 并开启 VLAN 过滤 (DSA 核心)
+  set network.device_br_lan=device
+  set network.device_br_lan.name='br-lan'
+  set network.device_br_lan.type='bridge'
+  set network.device_br_lan.vlan_filtering='1'
+
+  # --- VLAN 10: 透明高速区 (墙内直连流量) ---
+  # 允许所有物理口处理 VLAN 10，保持 Trunk 模式 (:t)
+  add network bridge-vlan
+  set network.@bridge-vlan[-1].device='br-lan'
+  set network.@bridge-vlan[-1].vlan='10'
+  list network.@bridge-vlan[-1].ports='wan:t'
+  list network.@bridge-vlan[-1].ports='lan1:t'
+  list network.@bridge-vlan[-1].ports='lan2:t'
+
+  # --- VLAN 20: EIP 专用区 (加密隧道流量) ---
+  # 强制隔离，不带任何聚合逻辑，专门给硬件加密引擎喂原子包
+  add network bridge-vlan
+  set network.@bridge-vlan[-1].device='br-lan'
+  set network.@bridge-vlan[-1].vlan='20'
+  list network.@bridge-vlan[-1].ports='wan:t'
+  list network.@bridge-vlan[-1].ports='lan1:t'
+  list network.@bridge-vlan[-1].ports='lan2:t'
+
+  # 创建逻辑接口：LAN (VLAN 10)
+  set network.lan=interface
+  set network.lan.proto='static'
+  set network.lan.device='br-lan.10'
+  set network.lan.ipaddr='192.168.35.1'
+  set network.lan.netmask='255.255.255.0'
+  set network.lan.delegate='0'
+
+  # 创建逻辑接口：CRYPTO (VLAN 20)
+  set network.crypto=interface
+  set network.crypto.proto='static'
+  set network.crypto.device='br-lan.20'
+  set network.crypto.ipaddr='192.168.36.1'
+  set network.crypto.netmask='255.255.255.0'
+  set network.crypto.mtu='1420'
+  set network.crypto.delegate='0'
+
+  commit network
+EOI
+
+# 3. 针对加密区 VLAN 接口的二次强化
+# 确保即便内核有残留设置，也要在逻辑层彻底切断 Offload
+ifconfig br-lan.20 mtu 1420
+ethtool -K br-lan.20 gro off gso off tso off 2>/dev/null
+
+# 4. 防火墙优先级补丁 (nftables)
+# 强制让 br-lan.20 的流量绕过软件 Offload 表，全力供给 EIP
+# 创建一个动态加载脚本或直接写入防火墙配置
+mkdir -p /etc/nftables.d
+cat << 'EOF' > /etc/nftables.d/10-eip-priority.nft
+table inet fw4 {
+    chain eip_fasttrack {
+        type filter hook forward priority -100; policy accept;
+        iifname "br-lan.20" oifname "wan" counter accept
+        iifname "wan" oifname "br-lan.20" counter accept
+    }
+}
+EOF
+
+# 重启防火墙应用规则
+/etc/init.d/firewall restart
+
+exit 0
+
+# ---4.强制所有 CPU 核心进入巅峰性能模式，杜绝任何节能延迟
+for i in 0 1 2 3; do
+    [ -e "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor" ] && \
+    echo "performance" > "/sys/devices/system/cpu/cpu\$i/cpufreq/scaling_governor"
+done
+
+# ---5.重新配置IRQ&RPS均衡模式
+# [精准寻脉] 通过物理地址锁定硬件中断，不依赖固件标签
+ETH_IRQ=\$(grep "15100000.ethernet" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ' | head -n1)
+CRYPTO_IRQ=\$(grep "10320000.crypto" /proc/interrupts | awk -F: '{print \$1}' | tr -d ' ')
+
+# [自适应均衡] 识别核心数并设定全核心打群架掩码 (3 为双核, f 为四核)
+CORE_COUNT=\$(grep -c "^processor" /proc/cpuinfo)
+[ "\$CORE_COUNT" -eq 4 ] && MASK="f" || MASK="3"
+
+# [中断主权绑定]
+[ -n "\$ETH_IRQ" ] && echo "\$MASK" > "/proc/irq/\$ETH_IRQ/smp_affinity"
+for irq in \$CRYPTO_IRQ; do
+    echo "\$MASK" > "/proc/irq/\$irq/smp_affinity"
+done
+
+# [ RPS 泵送优化]
+# 配合 GRO 开启后的大包，这里的分发效率将达到物理巅峰
+for x in /sys/class/net/*/queues/rx-*/rps_cpus; do echo "\$MASK" > "\$x"; done
+for x in /sys/class/net/*/queues/tx-*/xps_cpus; do echo "\$MASK" > "\$x"; done
+
+# [流量池扩容] 极大化流表预算，匹配 1.65G/2.2G 的高频吞吐
+echo "32768" > /proc/sys/net/core/rps_sock_flow_entries
+for x in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do echo "4096" > "\$x"; done
+
+# [物理卸载合闸] 强制开启硬件 PPE 转发引擎
+echo 1 > /sys/kernel/debug/hnat/all_external 2>/dev/null
+echo 1 > /sys/kernel/debug/hnat/all_internal 2>/dev/null
+
+# ---6. 巔峰參數合閘
+sysctl -w net.core.default_qdisc=fq
+sysctl -w net.ipv4.tcp_congestion_control=bbr
+sysctl -w net.ipv4.tcp_fastopen=3
+
+# ---7. 针对 fq 的进阶微调 (防止小包拥塞)
+# 允许每个流的最大速率不被过度限制，保持 4K 流的充沛动力
+sysctl -w net.ipv4.tcp_notsent_lowat=16384
+
+# --8. 系統級內核調優 (針對四核 A53 2.0GHz 高頻優化)
+# ---------------------------------------------------------
+cat >> /etc/sysctl.conf <<EOF
+# 四核心跳優化：適度拉長調度週期，減少核間切換開銷
+kernel.sched_latency_ns=10000000
+kernel.sched_min_granularity_ns=2000000
+kernel.sched_wakeup_granularity_ns=2500000
+
+# 提高軟中斷預算：四核同時開工，預算要給足
+net.core.netdev_budget=2000
+net.core.netdev_budget_usecs=20000
+
+# 內存管理 (防爆、防抖)
+vm.vfs_cache_pressure=60
+vm.swappiness=100
+vm.min_free_kbytes=40960
+
+# 內存與緩衝區 (MT7986 通常配備 512M/1G 內存，參數直接翻倍)
+vm.min_free_kbytes=40960
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+net.ipv4.tcp_rmem=4096 131072 33554432
+net.ipv4.tcp_wmem=4096 131072 33554432
+sysctl -p
+
+# TCP 窗口與緩衝區 (針對 4K 影音)
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+EOF
+sysctl -p
+
+# MT7531 网口减负 - 物理层整流]
+# 增加发送队列长度，防止硬件芯片在高负载下丢包导致发热
+ifconfig eth0 txqueuelen 2000
+ifconfig eth1 txqueuelen 2000
+
+# --9. 无线射频降温 - 被动扫描逻辑]
+# 针对中继接口开启被动扫描（只听不发），并禁用主动背景扫描降温
+uci set wireless.@wifi-iface[0].passive_scan='1'
+
+#提交配置
+uci commit wireless
+
+logger -t "Sovereignty" "v10.0 部署完畢：四核矩陣已合閘，算力全線對齊。"
+exit 0
